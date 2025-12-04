@@ -1,0 +1,54 @@
+# Dépendances
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Fichiers d'environnement
+.env
+.env.local
+.env.*.local
+
+# Fichiers macOS
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Test
+coverage/
+.nyc_output/
+
+# Build
+dist/
+build/
+
+# Uploads (seront montés en volume)
+uploads/
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+README.md
+docs/
+
+# Scripts non nécessaires en prod
+scripts/

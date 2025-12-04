@@ -1,0 +1,62 @@
+{
+  "name": "agrismart-ci-backend",
+  "version": "1.0.0",
+  "description": "Backend du système agricole intelligent pour la Côte d'Ivoire - IoT & IA",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "db:migrate": "psql $DATABASE_URL -f src/database/schema.sql",
+    "db:seed": "node scripts/seed.js",
+    "db:reset": "npm run db:migrate && npm run db:seed",
+    "test": "jest --coverage",
+    "test:watch": "jest --watch",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "docker:dev": "docker compose --profile dev up -d",
+    "docker:prod": "docker compose --profile production up -d",
+    "docker:down": "docker compose down"
+  },
+  "keywords": [
+    "agriculture",
+    "iot",
+    "ia",
+    "cote-divoire",
+    "smart-farming",
+    "sensors"
+  ],
+  "author": "AgriSmart CI Team",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "bcryptjs": "^2.4.3",
+    "compression": "^1.7.4",
+    "cors": "^2.8.5",
+    "cron": "^3.1.6",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "express-validator": "^7.0.1",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "multer": "^1.4.5-lts.1",
+    "nodemailer": "^7.0.11",
+    "pg": "^8.11.3",
+    "pg-pool": "^3.6.1",
+    "sharp": "^0.33.1",
+    "socket.io": "^4.7.2",
+    "twilio": "^4.19.3",
+    "uuid": "^9.0.1",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.55.0",
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.2",
+    "supertest": "^6.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
