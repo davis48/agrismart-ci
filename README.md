@@ -1,10 +1,25 @@
-# AgriSmart CI - Backend API
+# 🌾 AgriSmart CI - Backend API
+
+[![Node.js](https://img.shields.io/badge/Node.js-20%20LTS-green.svg)](https://nodejs.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue.svg)](https://www.postgresql.org/)
+[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](https://www.docker.com/)
+[![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen.svg)]()
 
 > Système Agricole Intelligent pour la Côte d'Ivoire
 
 ## 📋 Description
 
 AgriSmart CI est une plateforme agricole intelligente conçue pour améliorer la productivité agricole en Côte d'Ivoire. Elle intègre des capteurs IoT, l'intelligence artificielle pour la détection de maladies, et fournit des recommandations personnalisées aux producteurs.
+
+### 📊 Statistiques du Projet
+
+| Métrique | Valeur |
+|----------|--------|
+| Tables PostgreSQL | 27 |
+| Endpoints API | 40+ |
+| Modules | 12 |
+| Langues supportées | 4 (FR, Baoulé, Malinké, Sénoufo) |
+| Régions couvertes | 5 |
 
 ## 🚀 Fonctionnalités
 
@@ -209,6 +224,16 @@ npm run db:migrate
 # Seed données de test
 npm run db:seed
 ```
+
+## 📚 Documentation Complète
+
+| Document | Description |
+|----------|-------------|
+| [API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md) | Documentation complète de l'API REST |
+| [BASE_DE_DONNEES.md](docs/BASE_DE_DONNEES.md) | Structure et gestion de la base de données (27 tables) |
+| [CONCEPTION_BACKEND.md](docs/CONCEPTION_BACKEND.md) | Architecture et choix techniques |
+| [GUIDE_UTILISATION.md](docs/GUIDE_UTILISATION.md) | Guide d'utilisation pas à pas |
+| [VERIFICATION_CAHIER_CHARGES.md](docs/VERIFICATION_CAHIER_CHARGES.md) | Conformité au cahier des charges |
 
 ## 📁 Structure du Projet
 
