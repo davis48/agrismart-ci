@@ -15,21 +15,30 @@ const alertesService = require('../services/alertesService');
  */
 exports.create = async (req, res, next) => {
   try {
-    const { capteur_id, valeur, unite, timestamp } = req.body;
-    const measureTime = timestamp ? new Date(timestamp) : new Date();
+    const { capteur_id, valeur, unite } = req.body;
+    const measureTime = new Date();
+
+    // Récupérer les infos du capteur (station_id, parcelle_id)
+    const capteurResult = await db.query(
+      `SELECT c.station_id, s.parcelle_id 
+       FROM capteurs c 
+       JOIN stations s ON c.station_id = s.id 
+       WHERE c.id = $1`,
+      [capteur_id]
+    );
+
+    if (capteurResult.rows.length === 0) {
+      throw errors.notFound('Capteur non trouvé');
+    }
+
+    const { station_id, parcelle_id } = capteurResult.rows[0];
 
     // Insérer la mesure
     const result = await db.query(
-      `INSERT INTO mesures (capteur_id, valeur, unite, timestamp)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO mesures (capteur_id, station_id, parcelle_id, valeur, unite, mesure_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [capteur_id, valeur, unite, measureTime]
-    );
-
-    // Mettre à jour la dernière mesure du capteur
-    await db.query(
-      `UPDATE capteurs SET derniere_mesure = $1 WHERE id = $2`,
-      [measureTime, capteur_id]
+      [capteur_id, station_id, parcelle_id, valeur, unite, measureTime]
     );
 
     // Vérifier les seuils d'alerte
@@ -45,7 +54,7 @@ exports.create = async (req, res, next) => {
       io.emit('nouvelle_mesure', result.rows[0]);
     }
 
-    logger.iot('Nouvelle mesure', { capteurId: capteur_id, valeur });
+    logger.info('Nouvelle mesure', { capteurId: capteur_id, valeur });
 
     res.status(201).json({
       success: true,
@@ -66,33 +75,41 @@ exports.createBatch = async (req, res, next) => {
     const results = [];
     const errors_list = [];
 
-    await db.transaction(async (client) => {
-      for (const mesure of mesures) {
-        try {
-          const { capteur_id, valeur, unite, timestamp } = mesure;
-          const measureTime = timestamp ? new Date(timestamp) : new Date();
+    for (const mesure of mesures) {
+      try {
+        const { capteur_id, valeur, unite } = mesure;
+        const measureTime = new Date();
 
-          const result = await client.query(
-            `INSERT INTO mesures (capteur_id, valeur, unite, timestamp)
-             VALUES ($1, $2, $3, $4)
-             RETURNING id`,
-            [capteur_id, valeur, unite, measureTime]
-          );
+        // Récupérer les infos du capteur
+        const capteurResult = await db.query(
+          `SELECT c.station_id, s.parcelle_id 
+           FROM capteurs c 
+           JOIN stations s ON c.station_id = s.id 
+           WHERE c.id = $1`,
+          [capteur_id]
+        );
 
-          results.push({ capteur_id, id: result.rows[0].id, success: true });
-
-          // Mettre à jour dernière mesure
-          await client.query(
-            `UPDATE capteurs SET derniere_mesure = $1 WHERE id = $2`,
-            [measureTime, capteur_id]
-          );
-        } catch (err) {
-          errors_list.push({ capteur_id: mesure.capteur_id, error: err.message });
+        if (capteurResult.rows.length === 0) {
+          errors_list.push({ capteur_id, error: 'Capteur non trouvé' });
+          continue;
         }
-      }
-    });
 
-    logger.iot('Batch mesures', { total: mesures.length, success: results.length, errors: errors_list.length });
+        const { station_id, parcelle_id } = capteurResult.rows[0];
+
+        const result = await db.query(
+          `INSERT INTO mesures (capteur_id, station_id, parcelle_id, valeur, unite, mesure_at)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING id`,
+          [capteur_id, station_id, parcelle_id, valeur, unite, measureTime]
+        );
+
+        results.push({ capteur_id, id: result.rows[0].id, success: true });
+      } catch (err) {
+        errors_list.push({ capteur_id: mesure.capteur_id, error: err.message });
+      }
+    }
+
+    logger.info('Batch mesures', { total: mesures.length, success: results.length, errors: errors_list.length });
 
     res.status(201).json({
       success: true,
@@ -128,7 +145,7 @@ exports.getAll = async (req, res, next) => {
     let paramIndex = 1;
 
     if (req.user.role === ROLES.PRODUCTEUR) {
-      query += ` AND p.proprietaire_id = $${paramIndex++}`;
+      query += ` AND p.user_id = $${paramIndex++}`;
       params.push(req.user.id);
     }
 
@@ -148,16 +165,16 @@ exports.getAll = async (req, res, next) => {
     }
 
     if (debut) {
-      query += ` AND m.timestamp >= $${paramIndex++}`;
+      query += ` AND m.mesure_at >= $${paramIndex++}`;
       params.push(debut);
     }
 
     if (fin) {
-      query += ` AND m.timestamp <= $${paramIndex++}`;
+      query += ` AND m.mesure_at <= $${paramIndex++}`;
       params.push(fin);
     }
 
-    query += ` ORDER BY m.timestamp DESC LIMIT $${paramIndex++} OFFSET $${paramIndex}`;
+    query += ` ORDER BY m.mesure_at DESC LIMIT $${paramIndex++} OFFSET $${paramIndex}`;
     params.push(limit, offset);
 
     const result = await db.query(query, params);
@@ -183,18 +200,18 @@ exports.getLatest = async (req, res, next) => {
       SELECT DISTINCT ON (c.id)
         c.id as capteur_id, c.type as capteur_type, s.nom as station_nom,
         p.id as parcelle_id, p.nom as parcelle_nom,
-        m.valeur, m.unite, m.timestamp
+        m.valeur, m.unite, m.mesure_at
       FROM capteurs c
       JOIN stations s ON c.station_id = s.id
       JOIN parcelles p ON s.parcelle_id = p.id
       LEFT JOIN mesures m ON c.id = m.capteur_id
-      WHERE c.statut = 'actif'
+      WHERE c.status = 'actif'
     `;
     const params = [];
     let paramIndex = 1;
 
     if (req.user.role === ROLES.PRODUCTEUR) {
-      query += ` AND p.proprietaire_id = $${paramIndex++}`;
+      query += ` AND p.user_id = $${paramIndex++}`;
       params.push(req.user.id);
     }
 
@@ -203,7 +220,7 @@ exports.getLatest = async (req, res, next) => {
       params.push(parcelle_id);
     }
 
-    query += ` ORDER BY c.id, m.timestamp DESC`;
+    query += ` ORDER BY c.id, m.mesure_at DESC`;
 
     const result = await db.query(query, params);
 
@@ -224,11 +241,11 @@ exports.getStats = async (req, res, next) => {
     const stats = await db.query(`
       SELECT 
         COUNT(*) as total_mesures,
-        COUNT(*) FILTER (WHERE timestamp > NOW() - INTERVAL '24 hours') as mesures_24h,
-        COUNT(*) FILTER (WHERE timestamp > NOW() - INTERVAL '7 days') as mesures_7j,
+        COUNT(*) FILTER (WHERE mesure_at > NOW() - INTERVAL '24 hours') as mesures_24h,
+        COUNT(*) FILTER (WHERE mesure_at > NOW() - INTERVAL '7 days') as mesures_7j,
         COUNT(DISTINCT capteur_id) as capteurs_actifs
       FROM mesures
-      WHERE timestamp > NOW() - INTERVAL '30 days'
+      WHERE mesure_at > NOW() - INTERVAL '30 days'
     `);
 
     const parType = await db.query(`
@@ -239,7 +256,7 @@ exports.getStats = async (req, res, next) => {
              MAX(m.valeur) as max
       FROM mesures m
       JOIN capteurs c ON m.capteur_id = c.id
-      WHERE m.timestamp > NOW() - INTERVAL '24 hours'
+      WHERE m.mesure_at > NOW() - INTERVAL '24 hours'
       GROUP BY c.type
     `);
 
@@ -262,12 +279,11 @@ exports.getAggregated = async (req, res, next) => {
   try {
     const { parcelle_id, capteur_id, type, periode = 'jour', debut, fin } = req.query;
 
-    const interval = periode === 'heure' ? '1 hour' : '1 day';
     const truncate = periode === 'heure' ? 'hour' : 'day';
 
     let query = `
       SELECT 
-        DATE_TRUNC('${truncate}', m.timestamp) as periode,
+        DATE_TRUNC('${truncate}', m.mesure_at) as periode,
         c.type as capteur_type,
         AVG(m.valeur) as moyenne,
         MIN(m.valeur) as min,
@@ -277,14 +293,14 @@ exports.getAggregated = async (req, res, next) => {
       JOIN capteurs c ON m.capteur_id = c.id
       JOIN stations s ON c.station_id = s.id
       JOIN parcelles p ON s.parcelle_id = p.id
-      WHERE m.timestamp >= COALESCE($1::timestamp, NOW() - INTERVAL '7 days')
-        AND m.timestamp <= COALESCE($2::timestamp, NOW())
+      WHERE m.mesure_at >= COALESCE($1::timestamp, NOW() - INTERVAL '7 days')
+        AND m.mesure_at <= COALESCE($2::timestamp, NOW())
     `;
     const params = [debut || null, fin || null];
     let paramIndex = 3;
 
     if (req.user.role === ROLES.PRODUCTEUR) {
-      query += ` AND p.proprietaire_id = $${paramIndex++}`;
+      query += ` AND p.user_id = $${paramIndex++}`;
       params.push(req.user.id);
     }
 
@@ -303,7 +319,7 @@ exports.getAggregated = async (req, res, next) => {
       params.push(type);
     }
 
-    query += ` GROUP BY DATE_TRUNC('${truncate}', m.timestamp), c.type ORDER BY periode DESC`;
+    query += ` GROUP BY DATE_TRUNC('${truncate}', m.mesure_at), c.type ORDER BY periode DESC`;
 
     const result = await db.query(query, params);
 
@@ -324,20 +340,20 @@ exports.exportCsv = async (req, res, next) => {
     const { parcelle_id, capteur_id, debut, fin } = req.query;
 
     let query = `
-      SELECT m.timestamp, c.type as capteur_type, m.valeur, m.unite, 
+      SELECT m.mesure_at, c.type as capteur_type, m.valeur, m.unite, 
              s.nom as station, p.nom as parcelle
       FROM mesures m
       JOIN capteurs c ON m.capteur_id = c.id
       JOIN stations s ON c.station_id = s.id
       JOIN parcelles p ON s.parcelle_id = p.id
-      WHERE m.timestamp >= COALESCE($1::timestamp, NOW() - INTERVAL '30 days')
-        AND m.timestamp <= COALESCE($2::timestamp, NOW())
+      WHERE m.mesure_at >= COALESCE($1::timestamp, NOW() - INTERVAL '30 days')
+        AND m.mesure_at <= COALESCE($2::timestamp, NOW())
     `;
     const params = [debut || null, fin || null];
     let paramIndex = 3;
 
     if (req.user.role === ROLES.PRODUCTEUR) {
-      query += ` AND p.proprietaire_id = $${paramIndex++}`;
+      query += ` AND p.user_id = $${paramIndex++}`;
       params.push(req.user.id);
     }
 
@@ -351,16 +367,16 @@ exports.exportCsv = async (req, res, next) => {
       params.push(capteur_id);
     }
 
-    query += ` ORDER BY m.timestamp DESC LIMIT 10000`;
+    query += ` ORDER BY m.mesure_at DESC LIMIT 10000`;
 
     const result = await db.query(query, params);
 
     // Générer le CSV
-    const headers = ['timestamp', 'type_capteur', 'valeur', 'unite', 'station', 'parcelle'];
+    const headers = ['date_mesure', 'type_capteur', 'valeur', 'unite', 'station', 'parcelle'];
     const csv = [
       headers.join(','),
       ...result.rows.map(row => 
-        [row.timestamp, row.capteur_type, row.valeur, row.unite, row.station, row.parcelle].join(',')
+        [row.mesure_at, row.capteur_type, row.valeur, row.unite, row.station, row.parcelle].join(',')
       )
     ].join('\n');
 
@@ -417,7 +433,7 @@ exports.delete = async (req, res, next) => {
       throw errors.notFound('Mesure non trouvée');
     }
 
-    logger.audit('Suppression mesure', { userId: req.user.id, mesureId: id });
+    logger.info('Suppression mesure', { userId: req.user.id, mesureId: id });
 
     res.json({
       success: true,

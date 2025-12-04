@@ -20,7 +20,7 @@ exports.getAllStations = async (req, res, next) => {
     const offset = (page - 1) * limit;
 
     let query = `
-      SELECT s.*, p.nom as parcelle_nom, p.proprietaire_id,
+      SELECT s.*, p.nom as parcelle_nom, p.user_id,
              COUNT(c.id) as nb_capteurs
       FROM stations s
       LEFT JOIN parcelles p ON s.parcelle_id = p.id
@@ -31,11 +31,11 @@ exports.getAllStations = async (req, res, next) => {
     let paramIndex = 1;
 
     if (req.user.role === ROLES.PRODUCTEUR) {
-      query += ` AND p.proprietaire_id = $${paramIndex++}`;
+      query += ` AND p.user_id = $${paramIndex++}`;
       params.push(req.user.id);
     }
 
-    query += ` GROUP BY s.id, p.nom, p.proprietaire_id`;
+    query += ` GROUP BY s.id, p.nom, p.user_id`;
     query += ` ORDER BY s.created_at DESC LIMIT $${paramIndex++} OFFSET $${paramIndex}`;
     params.push(limit, offset);
 
@@ -55,12 +55,15 @@ exports.getAllStations = async (req, res, next) => {
  */
 exports.createStation = async (req, res, next) => {
   try {
-    const { nom, parcelle_id, latitude, longitude, description } = req.body;
+    const { nom, parcelle_id, latitude, longitude } = req.body;
+
+    // Générer un code unique
+    const code = `STA-${Date.now().toString(36).toUpperCase()}`;
 
     // Vérifier l'accès à la parcelle
     if (req.user.role === ROLES.PRODUCTEUR) {
       const parcelle = await db.query(
-        `SELECT id FROM parcelles WHERE id = $1 AND proprietaire_id = $2`,
+        `SELECT id FROM parcelles WHERE id = $1 AND user_id = $2`,
         [parcelle_id, req.user.id]
       );
       if (parcelle.rows.length === 0) {
@@ -69,10 +72,10 @@ exports.createStation = async (req, res, next) => {
     }
 
     const result = await db.query(
-      `INSERT INTO stations (nom, parcelle_id, latitude, longitude, description)
+      `INSERT INTO stations (code, nom, parcelle_id, latitude, longitude)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-      [nom, parcelle_id, latitude, longitude, description]
+      [code, nom, parcelle_id, latitude, longitude]
     );
 
     logger.audit('Création station', { userId: req.user.id, stationId: result.rows[0].id });
@@ -95,20 +98,20 @@ exports.getStationById = async (req, res, next) => {
     const { id } = req.params;
 
     const result = await db.query(
-      `SELECT s.*, p.nom as parcelle_nom, p.proprietaire_id,
+      `SELECT s.*, p.nom as parcelle_nom, p.user_id,
               json_agg(
                 json_build_object(
                   'id', c.id,
                   'type', c.type,
                   'modele', c.modele,
-                  'statut', c.statut
+                  'status', c.status
                 )
               ) FILTER (WHERE c.id IS NOT NULL) as capteurs
        FROM stations s
        LEFT JOIN parcelles p ON s.parcelle_id = p.id
        LEFT JOIN capteurs c ON s.id = c.station_id
        WHERE s.id = $1
-       GROUP BY s.id, p.nom, p.proprietaire_id`,
+       GROUP BY s.id, p.nom, p.user_id`,
       [id]
     );
 
@@ -131,19 +134,18 @@ exports.getStationById = async (req, res, next) => {
 exports.updateStation = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { nom, latitude, longitude, description, statut } = req.body;
+    const { nom, latitude, longitude, status } = req.body;
 
     const result = await db.query(
       `UPDATE stations 
        SET nom = COALESCE($1, nom),
            latitude = COALESCE($2, latitude),
            longitude = COALESCE($3, longitude),
-           description = COALESCE($4, description),
-           statut = COALESCE($5, statut),
+           status = COALESCE($4, status),
            updated_at = NOW()
-       WHERE id = $6
+       WHERE id = $5
        RETURNING *`,
-      [nom, latitude, longitude, description, statut, id]
+      [nom, latitude, longitude, status, id]
     );
 
     if (result.rows.length === 0) {
@@ -168,7 +170,7 @@ exports.deleteStation = async (req, res, next) => {
     const { id } = req.params;
 
     const result = await db.query(
-      `UPDATE stations SET statut = 'inactive', updated_at = NOW() WHERE id = $1 RETURNING id`,
+      `UPDATE stations SET status = 'inactif', updated_at = NOW() WHERE id = $1 RETURNING id`,
       [id]
     );
 
@@ -197,10 +199,10 @@ exports.getAll = async (req, res, next) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
-    const { type, statut } = req.query;
+    const { type, status } = req.query;
 
     let query = `
-      SELECT c.*, s.nom as station_nom, p.nom as parcelle_nom, p.proprietaire_id
+      SELECT c.*, s.nom as station_nom, p.nom as parcelle_nom, p.user_id
       FROM capteurs c
       LEFT JOIN stations s ON c.station_id = s.id
       LEFT JOIN parcelles p ON s.parcelle_id = p.id
@@ -210,7 +212,7 @@ exports.getAll = async (req, res, next) => {
     let paramIndex = 1;
 
     if (req.user.role === ROLES.PRODUCTEUR) {
-      query += ` AND p.proprietaire_id = $${paramIndex++}`;
+      query += ` AND p.user_id = $${paramIndex++}`;
       params.push(req.user.id);
     }
 
@@ -219,9 +221,9 @@ exports.getAll = async (req, res, next) => {
       params.push(type);
     }
 
-    if (statut) {
-      query += ` AND c.statut = $${paramIndex++}`;
-      params.push(statut);
+    if (status) {
+      query += ` AND c.status = $${paramIndex++}`;
+      params.push(status);
     }
 
     query += ` ORDER BY c.created_at DESC LIMIT $${paramIndex++} OFFSET $${paramIndex}`;
@@ -246,10 +248,9 @@ exports.getStats = async (req, res, next) => {
     const stats = await db.query(`
       SELECT 
         COUNT(*) as total,
-        COUNT(*) FILTER (WHERE statut = 'actif') as actifs,
-        COUNT(*) FILTER (WHERE statut = 'inactif') as inactifs,
-        COUNT(*) FILTER (WHERE statut = 'maintenance') as en_maintenance,
-        COUNT(*) FILTER (WHERE derniere_mesure < NOW() - INTERVAL '1 hour') as hors_ligne
+        COUNT(*) FILTER (WHERE status = 'actif') as actifs,
+        COUNT(*) FILTER (WHERE status = 'inactif') as inactifs,
+        COUNT(*) FILTER (WHERE status = 'maintenance') as en_maintenance
       FROM capteurs
     `);
 
@@ -276,14 +277,17 @@ exports.getStats = async (req, res, next) => {
  */
 exports.create = async (req, res, next) => {
   try {
-    const { station_id, type, modele, numero_serie, config } = req.body;
+    const { station_id, type, modele, fabricant, unite_mesure } = req.body;
+
+    // Générer un code unique
+    const code = `CAP-${Date.now().toString(36).toUpperCase()}`;
 
     // Vérifier l'accès à la station
     if (req.user.role === ROLES.PRODUCTEUR) {
       const station = await db.query(
         `SELECT s.id FROM stations s
          JOIN parcelles p ON s.parcelle_id = p.id
-         WHERE s.id = $1 AND p.proprietaire_id = $2`,
+         WHERE s.id = $1 AND p.user_id = $2`,
         [station_id, req.user.id]
       );
       if (station.rows.length === 0) {
@@ -292,10 +296,10 @@ exports.create = async (req, res, next) => {
     }
 
     const result = await db.query(
-      `INSERT INTO capteurs (station_id, type, modele, numero_serie, config)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO capteurs (code, station_id, type, modele, fabricant, unite_mesure)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [station_id, type, modele, numero_serie, config || {}]
+      [code, station_id, type, modele, fabricant, unite_mesure]
     );
 
     logger.audit('Création capteur', { userId: req.user.id, capteurId: result.rows[0].id });
@@ -345,18 +349,18 @@ exports.getById = async (req, res, next) => {
 exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { modele, numero_serie, statut, config } = req.body;
+    const { modele, fabricant, status, unite_mesure } = req.body;
 
     const result = await db.query(
       `UPDATE capteurs 
        SET modele = COALESCE($1, modele),
-           numero_serie = COALESCE($2, numero_serie),
-           statut = COALESCE($3, statut),
-           config = COALESCE($4, config),
+           fabricant = COALESCE($2, fabricant),
+           status = COALESCE($3, status),
+           unite_mesure = COALESCE($4, unite_mesure),
            updated_at = NOW()
        WHERE id = $5
        RETURNING *`,
-      [modele, numero_serie, statut, config, id]
+      [modele, fabricant, status, unite_mesure, id]
     );
 
     if (result.rows.length === 0) {
@@ -381,7 +385,7 @@ exports.delete = async (req, res, next) => {
     const { id } = req.params;
 
     const result = await db.query(
-      `UPDATE capteurs SET statut = 'inactif', updated_at = NOW() WHERE id = $1 RETURNING id`,
+      `UPDATE capteurs SET status = 'inactif', updated_at = NOW() WHERE id = $1 RETURNING id`,
       [id]
     );
 
@@ -406,19 +410,16 @@ exports.delete = async (req, res, next) => {
 exports.calibrate = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { facteur_calibration, offset_calibration } = req.body;
+    const { facteur_correction } = req.body;
 
     const result = await db.query(
       `UPDATE capteurs 
-       SET config = jsonb_set(
-             jsonb_set(config, '{facteur_calibration}', $1::jsonb),
-             '{offset_calibration}', $2::jsonb
-           ),
+       SET facteur_correction = COALESCE($1, facteur_correction),
            derniere_calibration = NOW(),
            updated_at = NOW()
-       WHERE id = $3
+       WHERE id = $2
        RETURNING *`,
-      [JSON.stringify(facteur_calibration || 1), JSON.stringify(offset_calibration || 0), id]
+      [facteur_correction || 1.0, id]
     );
 
     if (result.rows.length === 0) {
@@ -506,11 +507,11 @@ exports.getStatus = async (req, res, next) => {
       data: {
         id: data.id,
         type: data.type,
-        statut: data.statut,
+        status: data.status,
         en_ligne: isOnline,
         derniere_valeur: data.derniere_valeur,
         derniere_mesure: lastMeasure,
-        batterie: data.config?.batterie || null
+        niveau_batterie: null
       }
     });
   } catch (error) {

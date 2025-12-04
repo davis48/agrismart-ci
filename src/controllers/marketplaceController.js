@@ -18,10 +18,10 @@ exports.getAllProduits = async (req, res, next) => {
     const { categorie, prix_min, prix_max } = req.query;
 
     let query = `
-      SELECT p.*, u.nom as vendeur_nom, u.telephone as vendeur_telephone, u.localisation
-      FROM produits_marketplace p
+      SELECT p.*, u.nom as vendeur_nom, u.telephone as vendeur_telephone, u.village
+      FROM marketplace_produits p
       JOIN users u ON p.vendeur_id = u.id
-      WHERE p.statut = 'actif' AND p.quantite_disponible > 0
+      WHERE p.est_actif = true AND p.quantite_disponible > 0
     `;
     const params = [];
     let paramIndex = 1;
@@ -60,10 +60,10 @@ exports.searchProduits = async (req, res, next) => {
     const { q, categorie } = req.query;
 
     let query = `
-      SELECT p.*, u.nom as vendeur_nom, u.localisation
-      FROM produits_marketplace p
+      SELECT p.*, u.nom as vendeur_nom, u.village
+      FROM marketplace_produits p
       JOIN users u ON p.vendeur_id = u.id
-      WHERE p.statut = 'actif' AND p.quantite_disponible > 0
+      WHERE p.est_actif = true AND p.quantite_disponible > 0
     `;
     const params = [];
     let paramIndex = 1;
@@ -95,7 +95,7 @@ exports.searchProduits = async (req, res, next) => {
 exports.getMyProduits = async (req, res, next) => {
   try {
     const result = await db.query(
-      `SELECT * FROM produits_marketplace 
+      `SELECT * FROM marketplace_produits 
        WHERE vendeur_id = $1 
        ORDER BY created_at DESC`,
       [req.user.id]
@@ -112,7 +112,7 @@ exports.getMyProduits = async (req, res, next) => {
 
 exports.createProduit = async (req, res, next) => {
   try {
-    const { nom, description, categorie, prix, unite, quantite_disponible, localisation } = req.body;
+    const { nom, description, categorie, prix, unite, quantite_disponible, lieu_retrait, livraison_possible } = req.body;
 
     // Traiter les images si présentes
     let images = [];
@@ -122,12 +122,12 @@ exports.createProduit = async (req, res, next) => {
     }
 
     const result = await db.query(
-      `INSERT INTO produits_marketplace (vendeur_id, nom, description, categorie, prix, unite, 
-                                          quantite_disponible, localisation, images)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO marketplace_produits (vendeur_id, nom, description, categorie, prix, unite, 
+                                          quantite_disponible, lieu_retrait, livraison_possible, images)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [req.user.id, nom, description, categorie, prix, unite || 'kg', 
-       quantite_disponible, localisation, images]
+       quantite_disponible, lieu_retrait, livraison_possible || false, images]
     );
 
     logger.audit('Création produit marketplace', { userId: req.user.id, produitId: result.rows[0].id });
@@ -147,9 +147,9 @@ exports.getProduitById = async (req, res, next) => {
     const { id } = req.params;
 
     const result = await db.query(
-      `SELECT p.*, u.nom as vendeur_nom, u.prenom as vendeur_prenom, 
-              u.telephone as vendeur_telephone, u.localisation as vendeur_localisation
-       FROM produits_marketplace p
+      `SELECT p.*, u.nom as vendeur_nom, u.prenoms as vendeur_prenom, 
+              u.telephone as vendeur_telephone, u.village as vendeur_village
+       FROM marketplace_produits p
        JOIN users u ON p.vendeur_id = u.id
        WHERE p.id = $1`,
       [id]
@@ -210,15 +210,15 @@ exports.deleteProduit = async (req, res, next) => {
     const { id } = req.params;
 
     // Vérifier les permissions
-    const produit = await db.query(`SELECT vendeur_id FROM produits_marketplace WHERE id = $1`, [id]);
+    const produit = await db.query(`SELECT vendeur_id FROM marketplace_produits WHERE id = $1`, [id]);
     if (produit.rows.length === 0) {
       throw errors.notFound('Produit non trouvé');
     }
     if (produit.rows[0].vendeur_id !== req.user.id && req.user.role !== ROLES.ADMIN) {
-      throw errors.forbidden('Vous n\'êtes pas autorisé à supprimer ce produit');
+      throw errors.forbidden('Vous n\'\u00eates pas autorisé à supprimer ce produit');
     }
 
-    await db.query(`UPDATE produits_marketplace SET statut = 'supprime' WHERE id = $1`, [id]);
+    await db.query(`UPDATE marketplace_produits SET est_actif = false WHERE id = $1`, [id]);
 
     res.json({
       success: true,
@@ -239,10 +239,10 @@ exports.getCommandes = async (req, res, next) => {
       SELECT c.*, p.nom as produit_nom, p.prix as produit_prix,
              acheteur.nom as acheteur_nom, acheteur.telephone as acheteur_telephone,
              vendeur.nom as vendeur_nom, vendeur.telephone as vendeur_telephone
-      FROM commandes_marketplace c
-      JOIN produits_marketplace p ON c.produit_id = p.id
+      FROM marketplace_commandes c
+      JOIN marketplace_produits p ON c.produit_id = p.id
       JOIN users acheteur ON c.acheteur_id = acheteur.id
-      JOIN users vendeur ON p.vendeur_id = vendeur.id
+      JOIN users vendeur ON c.vendeur_id = vendeur.id
       WHERE 1=1
     `;
     const params = [];
@@ -252,10 +252,10 @@ exports.getCommandes = async (req, res, next) => {
       query += ` AND c.acheteur_id = $${paramIndex++}`;
       params.push(req.user.id);
     } else if (type === 'ventes') {
-      query += ` AND p.vendeur_id = $${paramIndex++}`;
+      query += ` AND c.vendeur_id = $${paramIndex++}`;
       params.push(req.user.id);
     } else {
-      query += ` AND (c.acheteur_id = $${paramIndex} OR p.vendeur_id = $${paramIndex})`;
+      query += ` AND (c.acheteur_id = $${paramIndex} OR c.vendeur_id = $${paramIndex})`;
       params.push(req.user.id);
       paramIndex++;
     }
@@ -275,11 +275,11 @@ exports.getCommandes = async (req, res, next) => {
 
 exports.createCommande = async (req, res, next) => {
   try {
-    const { produit_id, quantite, adresse_livraison, notes } = req.body;
+    const { produit_id, quantite, adresse_livraison, mode_livraison } = req.body;
 
     // Vérifier le produit et la disponibilité
     const produit = await db.query(
-      `SELECT * FROM produits_marketplace WHERE id = $1 AND statut = 'actif'`,
+      `SELECT * FROM marketplace_produits WHERE id = $1 AND est_actif = true`,
       [produit_id]
     );
 
@@ -295,20 +295,21 @@ exports.createCommande = async (req, res, next) => {
       throw errors.badRequest('Vous ne pouvez pas acheter votre propre produit');
     }
 
-    const montant_total = produit.rows[0].prix * quantite;
+    const prix_unitaire = produit.rows[0].prix;
+    const prix_total = prix_unitaire * quantite;
 
     // Créer la commande
     const result = await db.query(
-      `INSERT INTO commandes_marketplace (acheteur_id, produit_id, quantite, montant_total, 
-                                           adresse_livraison, notes)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO marketplace_commandes (acheteur_id, vendeur_id, produit_id, quantite, prix_unitaire, prix_total, 
+                                           adresse_livraison, mode_livraison)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [req.user.id, produit_id, quantite, montant_total, adresse_livraison, notes]
+      [req.user.id, produit.rows[0].vendeur_id, produit_id, quantite, prix_unitaire, prix_total, adresse_livraison, mode_livraison]
     );
 
     // Mettre à jour le stock
     await db.query(
-      `UPDATE produits_marketplace SET quantite_disponible = quantite_disponible - $1 WHERE id = $2`,
+      `UPDATE marketplace_produits SET quantite_disponible = quantite_disponible - $1 WHERE id = $2`,
       [quantite, produit_id]
     );
 
@@ -336,10 +337,10 @@ exports.getCommandeById = async (req, res, next) => {
       `SELECT c.*, p.nom as produit_nom, p.images as produit_images,
               acheteur.nom as acheteur_nom, acheteur.telephone as acheteur_telephone,
               vendeur.nom as vendeur_nom, vendeur.telephone as vendeur_telephone
-       FROM commandes_marketplace c
-       JOIN produits_marketplace p ON c.produit_id = p.id
+       FROM marketplace_commandes c
+       JOIN marketplace_produits p ON c.produit_id = p.id
        JOIN users acheteur ON c.acheteur_id = acheteur.id
-       JOIN users vendeur ON p.vendeur_id = vendeur.id
+       JOIN users vendeur ON c.vendeur_id = vendeur.id
        WHERE c.id = $1`,
       [id]
     );
@@ -360,14 +361,14 @@ exports.getCommandeById = async (req, res, next) => {
 exports.updateCommandeStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { statut, notes } = req.body;
+    const { statut } = req.body;
 
     const result = await db.query(
-      `UPDATE commandes_marketplace 
-       SET statut = $1, notes = COALESCE($2, notes), updated_at = NOW()
-       WHERE id = $3
+      `UPDATE marketplace_commandes 
+       SET statut = $1, updated_at = NOW()
+       WHERE id = $2
        RETURNING *`,
-      [statut, notes, id]
+      [statut, id]
     );
 
     if (result.rows.length === 0) {
@@ -439,11 +440,11 @@ exports.getStats = async (req, res, next) => {
   try {
     const stats = await db.query(`
       SELECT 
-        (SELECT COUNT(*) FROM produits_marketplace WHERE statut = 'actif') as produits_actifs,
-        (SELECT COUNT(*) FROM commandes_marketplace) as total_commandes,
-        (SELECT COUNT(*) FROM commandes_marketplace WHERE statut = 'livree') as commandes_livrees,
-        (SELECT COALESCE(SUM(montant_total), 0) FROM commandes_marketplace WHERE statut = 'livree') as volume_ventes,
-        (SELECT COUNT(DISTINCT vendeur_id) FROM produits_marketplace WHERE statut = 'actif') as vendeurs_actifs
+        (SELECT COUNT(*) FROM marketplace_produits WHERE est_actif = true) as produits_actifs,
+        (SELECT COUNT(*) FROM marketplace_commandes) as total_commandes,
+        (SELECT COUNT(*) FROM marketplace_commandes WHERE statut = 'livree') as commandes_livrees,
+        (SELECT COALESCE(SUM(prix_total), 0) FROM marketplace_commandes WHERE statut = 'livree') as volume_ventes,
+        (SELECT COUNT(DISTINCT vendeur_id) FROM marketplace_produits WHERE est_actif = true) as vendeurs_actifs
     `);
 
     res.json({
@@ -459,14 +460,11 @@ exports.getVendeurStats = async (req, res, next) => {
   try {
     const stats = await db.query(`
       SELECT 
-        (SELECT COUNT(*) FROM produits_marketplace WHERE vendeur_id = $1) as mes_produits,
-        (SELECT COUNT(*) FROM produits_marketplace WHERE vendeur_id = $1 AND statut = 'actif') as produits_actifs,
-        (SELECT COUNT(*) FROM commandes_marketplace c 
-         JOIN produits_marketplace p ON c.produit_id = p.id 
-         WHERE p.vendeur_id = $1) as commandes_recues,
-        (SELECT COALESCE(SUM(c.montant_total), 0) FROM commandes_marketplace c 
-         JOIN produits_marketplace p ON c.produit_id = p.id 
-         WHERE p.vendeur_id = $1 AND c.statut = 'livree') as revenus_total
+        (SELECT COUNT(*) FROM marketplace_produits WHERE vendeur_id = $1) as mes_produits,
+        (SELECT COUNT(*) FROM marketplace_produits WHERE vendeur_id = $1 AND est_actif = true) as produits_actifs,
+        (SELECT COUNT(*) FROM marketplace_commandes WHERE vendeur_id = $1) as commandes_recues,
+        (SELECT COALESCE(SUM(prix_total), 0) FROM marketplace_commandes 
+         WHERE vendeur_id = $1 AND statut = 'livree') as revenus_total
     `, [req.user.id]);
 
     res.json({

@@ -34,6 +34,13 @@ router.get('/', isProducteur, formationsController.getAllFormations);
 router.get('/mes-progressions', isProducteur, formationsController.getMyProgressions);
 
 /**
+ * @route   GET /api/formations/mes-formations
+ * @desc    Obtenir mes formations inscrites
+ * @access  Producteur, Conseiller, Admin
+ */
+router.get('/mes-formations', isProducteur, formationsController.getMesFormations);
+
+/**
  * @route   GET /api/formations/stats
  * @desc    Statistiques des formations
  * @access  Conseiller, Admin
@@ -49,10 +56,9 @@ router.post('/',
   isConseiller,
   [
     body('titre').trim().notEmpty().isLength({ max: 200 }),
-    body('description').trim().notEmpty().isLength({ max: 5000 }),
-    body('type').optional().isIn(['video', 'tutoriel', 'pratique', 'webinaire']),
-    body('niveau').optional().isIn(['debutant', 'intermediaire', 'avance']),
-    body('duree_estimee').optional().isInt({ min: 1 }),
+    body('description').optional().trim().isLength({ max: 5000 }),
+    body('type').notEmpty().isIn(['video', 'document', 'audio', 'interactif']),
+    body('duree_minutes').optional().isInt({ min: 1 }),
     validate
   ],
   formationsController.createFormation
@@ -80,37 +86,6 @@ router.put('/:id', isConseiller, schemas.paramUuid('id'), formationsController.u
 router.delete('/:id', isAdmin, schemas.paramUuid('id'), formationsController.deleteFormation);
 
 /**
- * @route   POST /api/formations/:id/modules
- * @desc    Ajouter un module à une formation
- * @access  Conseiller, Admin
- */
-router.post('/:id/modules', 
-  isConseiller, 
-  schemas.paramUuid('id'),
-  [
-    body('titre').trim().notEmpty(),
-    body('contenu').trim().notEmpty(),
-    body('ordre').isInt({ min: 1 }),
-    validate
-  ],
-  formationsController.addModule
-);
-
-/**
- * @route   PUT /api/formations/modules/:moduleId
- * @desc    Mettre à jour un module
- * @access  Conseiller, Admin
- */
-router.put('/modules/:moduleId', isConseiller, formationsController.updateModule);
-
-/**
- * @route   DELETE /api/formations/modules/:moduleId
- * @desc    Supprimer un module
- * @access  Conseiller, Admin
- */
-router.delete('/modules/:moduleId', isConseiller, formationsController.deleteModule);
-
-/**
  * @route   POST /api/formations/:id/inscrire
  * @desc    S'inscrire à une formation
  * @access  Producteur, Conseiller, Admin
@@ -123,19 +98,5 @@ router.post('/:id/inscrire', schemas.paramUuid('id'), formationsController.inscr
  * @access  Producteur, Conseiller, Admin
  */
 router.put('/:id/progression', schemas.paramUuid('id'), formationsController.updateProgression);
-
-/**
- * @route   GET /api/formations/modules/:moduleId/quiz
- * @desc    Obtenir le quiz d'un module
- * @access  Producteur, Conseiller, Admin
- */
-router.get('/modules/:moduleId/quiz', formationsController.getQuiz);
-
-/**
- * @route   POST /api/formations/modules/:moduleId/quiz
- * @desc    Soumettre les réponses du quiz
- * @access  Producteur, Conseiller, Admin
- */
-router.post('/modules/:moduleId/quiz', formationsController.submitQuiz);
 
 module.exports = router;

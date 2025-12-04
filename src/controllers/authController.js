@@ -223,7 +223,7 @@ exports.verifyOtp = async (req, res, next) => {
     // Si c'est une vérification d'inscription, activer le compte
     if (otpData.type === 'verification' && user.status === 'en_attente') {
       await db.query(
-        `UPDATE users SET status = 'actif', email_verified = true WHERE id = $1`,
+        `UPDATE users SET status = 'actif' WHERE id = $1`,
         [user.id]
       );
       user.status = 'actif';
@@ -474,7 +474,9 @@ exports.getMe = async (req, res, next) => {
   try {
     const result = await db.query(
       `SELECT id, email, telephone, nom, prenoms, role, status, langue_preferee, 
-              photo_url, adresse, localisation, created_at, derniere_connexion
+              region_id, cooperative_id, village, notifications_sms, 
+              notifications_whatsapp, notifications_push,
+              created_at, derniere_connexion
        FROM users WHERE id = $1`,
       [req.user.id]
     );
@@ -493,19 +495,21 @@ exports.getMe = async (req, res, next) => {
  */
 exports.updateMe = async (req, res, next) => {
   try {
-    const { nom, prenoms, langue_preferee, adresse, localisation } = req.body;
+    const { nom, prenoms, langue_preferee, village, notifications_sms, notifications_whatsapp, notifications_push } = req.body;
 
     const result = await db.query(
       `UPDATE users 
        SET nom = COALESCE($1, nom),
            prenoms = COALESCE($2, prenoms),
            langue_preferee = COALESCE($3, langue_preferee),
-           adresse = COALESCE($4, adresse),
-           localisation = COALESCE($5, localisation),
+           village = COALESCE($4, village),
+           notifications_sms = COALESCE($5, notifications_sms),
+           notifications_whatsapp = COALESCE($6, notifications_whatsapp),
+           notifications_push = COALESCE($7, notifications_push),
            updated_at = NOW()
-       WHERE id = $6
-       RETURNING id, email, telephone, nom, prenoms, role, langue_preferee, adresse, localisation`,
-      [nom, prenoms, langue_preferee, adresse, localisation, req.user.id]
+       WHERE id = $8
+       RETURNING id, email, telephone, nom, prenoms, role, langue_preferee, village`,
+      [nom, prenoms, langue_preferee, village, notifications_sms, notifications_whatsapp, notifications_push, req.user.id]
     );
 
     logger.audit('Mise à jour profil', { userId: req.user.id });

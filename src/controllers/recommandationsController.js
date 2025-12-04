@@ -13,31 +13,25 @@ exports.getAll = async (req, res, next) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
-    const { type, statut, priorite } = req.query;
+    const { type, priorite } = req.query;
 
     let query = `
-      SELECT r.*, p.nom as parcelle_nom, c.nom as culture_nom
+      SELECT r.*, p.nom as parcelle_nom
       FROM recommandations r
       LEFT JOIN parcelles p ON r.parcelle_id = p.id
-      LEFT JOIN cultures c ON r.culture_id = c.id
       WHERE 1=1
     `;
     const params = [];
     let paramIndex = 1;
 
     if (req.user.role === ROLES.PRODUCTEUR) {
-      query += ` AND p.proprietaire_id = $${paramIndex++}`;
+      query += ` AND r.user_id = $${paramIndex++}`;
       params.push(req.user.id);
     }
 
     if (type) {
       query += ` AND r.type = $${paramIndex++}`;
       params.push(type);
-    }
-
-    if (statut) {
-      query += ` AND r.statut = $${paramIndex++}`;
-      params.push(statut);
     }
 
     if (priorite) {

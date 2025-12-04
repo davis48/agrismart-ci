@@ -19,15 +19,15 @@ exports.getAll = async (req, res, next) => {
     const { statut, type_sol, search } = req.query;
 
     let query = `
-      SELECT p.id, p.nom, p.superficie, p.latitude, p.longitude, p.adresse, 
-             p.type_sol, p.statut, p.created_at,
-             u.nom as proprietaire_nom, u.prenom as proprietaire_prenom,
+      SELECT p.id, p.nom, p.superficie_hectares as superficie, p.latitude, p.longitude, p.description, 
+             p.type_sol, p.status, p.created_at,
+             u.nom as proprietaire_nom, u.prenoms as proprietaire_prenom,
              COUNT(DISTINCT s.id) as nb_stations,
              COUNT(DISTINCT pl.id) as nb_plantations
       FROM parcelles p
-      LEFT JOIN users u ON p.proprietaire_id = u.id
+      LEFT JOIN users u ON p.user_id = u.id
       LEFT JOIN stations s ON p.id = s.parcelle_id
-      LEFT JOIN plantations pl ON p.id = pl.parcelle_id AND pl.statut = 'active'
+      LEFT JOIN plantations pl ON p.id = pl.parcelle_id AND pl.est_active = true
       WHERE 1=1
     `;
     const params = [];
@@ -35,12 +35,12 @@ exports.getAll = async (req, res, next) => {
 
     // Filtrer selon le rôle
     if (req.user.role === ROLES.PRODUCTEUR) {
-      query += ` AND p.proprietaire_id = $${paramIndex++}`;
+      query += ` AND p.user_id = $${paramIndex++}`;
       params.push(req.user.id);
     }
 
     if (statut) {
-      query += ` AND p.statut = $${paramIndex++}`;
+      query += ` AND p.status = $${paramIndex++}`;
       params.push(statut);
     }
 
@@ -50,17 +50,17 @@ exports.getAll = async (req, res, next) => {
     }
 
     if (search) {
-      query += ` AND (p.nom ILIKE $${paramIndex} OR p.adresse ILIKE $${paramIndex})`;
+      query += ` AND (p.nom ILIKE $${paramIndex} OR p.description ILIKE $${paramIndex})`;
       params.push(`%${search}%`);
       paramIndex++;
     }
 
-    query += ` GROUP BY p.id, u.nom, u.prenom`;
+    query += ` GROUP BY p.id, u.nom, u.prenoms`;
 
     // Count
     const countQuery = `
       SELECT COUNT(DISTINCT p.id) FROM parcelles p
-      WHERE 1=1 ${req.user.role === ROLES.PRODUCTEUR ? 'AND p.proprietaire_id = $1' : ''}
+      WHERE 1=1 ${req.user.role === ROLES.PRODUCTEUR ? 'AND p.user_id = $1' : ''}
     `;
     const countParams = req.user.role === ROLES.PRODUCTEUR ? [req.user.id] : [];
     const countResult = await db.query(countQuery, countParams);
@@ -95,15 +95,15 @@ exports.getStats = async (req, res, next) => {
     const stats = await db.query(`
       SELECT 
         COUNT(*) as total_parcelles,
-        COALESCE(SUM(superficie), 0) as superficie_totale,
-        AVG(superficie) as superficie_moyenne,
-        COUNT(*) FILTER (WHERE statut = 'active') as parcelles_actives,
-        COUNT(DISTINCT proprietaire_id) as nb_proprietaires
+        COALESCE(SUM(superficie_hectares), 0) as superficie_totale,
+        AVG(superficie_hectares) as superficie_moyenne,
+        COUNT(*) FILTER (WHERE status = 'active') as parcelles_actives,
+        COUNT(DISTINCT user_id) as nb_proprietaires
       FROM parcelles
     `);
 
     const parType = await db.query(`
-      SELECT type_sol, COUNT(*) as count, SUM(superficie) as superficie
+      SELECT type_sol, COUNT(*) as count, SUM(superficie_hectares) as superficie
       FROM parcelles
       WHERE type_sol IS NOT NULL
       GROUP BY type_sol
@@ -127,16 +127,16 @@ exports.getStats = async (req, res, next) => {
 exports.getMapData = async (req, res, next) => {
   try {
     let query = `
-      SELECT p.id, p.nom, p.superficie, p.latitude, p.longitude, p.statut,
+      SELECT p.id, p.nom, p.superficie_hectares as superficie, p.latitude, p.longitude, p.status,
              u.nom as proprietaire_nom
       FROM parcelles p
-      LEFT JOIN users u ON p.proprietaire_id = u.id
+      LEFT JOIN users u ON p.user_id = u.id
       WHERE p.latitude IS NOT NULL AND p.longitude IS NOT NULL
     `;
 
     const params = [];
     if (req.user.role === ROLES.PRODUCTEUR) {
-      query += ` AND p.proprietaire_id = $1`;
+      query += ` AND p.user_id = $1`;
       params.push(req.user.id);
     }
 
@@ -156,19 +156,19 @@ exports.getMapData = async (req, res, next) => {
  */
 exports.create = async (req, res, next) => {
   try {
-    const { nom, superficie, latitude, longitude, adresse, type_sol } = req.body;
-    const proprietaireId = req.body.proprietaire_id || req.user.id;
+    const { nom, superficie, latitude, longitude, description, type_sol } = req.body;
+    const userId = req.body.user_id || req.user.id;
 
     // Vérifier les permissions
-    if (req.body.proprietaire_id && req.user.role === ROLES.PRODUCTEUR) {
+    if (req.body.user_id && req.user.role === ROLES.PRODUCTEUR) {
       throw errors.forbidden('Vous ne pouvez créer que vos propres parcelles');
     }
 
     const result = await db.query(
-      `INSERT INTO parcelles (nom, superficie, latitude, longitude, adresse, type_sol, proprietaire_id)
+      `INSERT INTO parcelles (nom, superficie_hectares, latitude, longitude, description, type_sol, user_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [nom, superficie, latitude, longitude, adresse, type_sol, proprietaireId]
+      [nom, superficie, latitude, longitude, description, type_sol, userId]
     );
 
     logger.audit('Création parcelle', { userId: req.user.id, parcelleId: result.rows[0].id });
@@ -192,15 +192,15 @@ exports.getById = async (req, res, next) => {
 
     const result = await db.query(
       `SELECT p.*, 
-              u.nom as proprietaire_nom, u.prenom as proprietaire_prenom, u.telephone as proprietaire_telephone,
+              u.nom as proprietaire_nom, u.prenoms as proprietaire_prenom, u.telephone as proprietaire_telephone,
               COUNT(DISTINCT s.id) as nb_stations,
               COUNT(DISTINCT c.id) as nb_capteurs
        FROM parcelles p
-       LEFT JOIN users u ON p.proprietaire_id = u.id
+       LEFT JOIN users u ON p.user_id = u.id
        LEFT JOIN stations s ON p.id = s.parcelle_id
        LEFT JOIN capteurs c ON s.id = c.station_id
        WHERE p.id = $1
-       GROUP BY p.id, u.nom, u.prenom, u.telephone`,
+       GROUP BY p.id, u.nom, u.prenoms, u.telephone`,
       [id]
     );
 
@@ -223,21 +223,21 @@ exports.getById = async (req, res, next) => {
 exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { nom, superficie, latitude, longitude, adresse, type_sol, statut } = req.body;
+    const { nom, superficie, latitude, longitude, description, type_sol, status } = req.body;
 
     const result = await db.query(
       `UPDATE parcelles 
        SET nom = COALESCE($1, nom),
-           superficie = COALESCE($2, superficie),
+           superficie_hectares = COALESCE($2, superficie_hectares),
            latitude = COALESCE($3, latitude),
            longitude = COALESCE($4, longitude),
-           adresse = COALESCE($5, adresse),
+           description = COALESCE($5, description),
            type_sol = COALESCE($6, type_sol),
-           statut = COALESCE($7, statut),
+           status = COALESCE($7, status),
            updated_at = NOW()
        WHERE id = $8
        RETURNING *`,
-      [nom, superficie, latitude, longitude, adresse, type_sol, statut, id]
+      [nom, superficie, latitude, longitude, description, type_sol, status, id]
     );
 
     if (result.rows.length === 0) {
@@ -265,7 +265,7 @@ exports.delete = async (req, res, next) => {
 
     // Soft delete
     const result = await db.query(
-      `UPDATE parcelles SET statut = 'inactive', updated_at = NOW() WHERE id = $1 RETURNING id`,
+      `UPDATE parcelles SET status = 'inactive', updated_at = NOW() WHERE id = $1 RETURNING id`,
       [id]
     );
 
@@ -409,7 +409,7 @@ exports.getRecommandations = async (req, res, next) => {
 
     const result = await db.query(
       `SELECT * FROM recommandations 
-       WHERE parcelle_id = $1 AND statut = 'en_attente'
+       WHERE parcelle_id = $1 AND status = 'en_attente'
        ORDER BY priorite DESC, created_at DESC`,
       [id]
     );

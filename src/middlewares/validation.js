@@ -153,14 +153,14 @@ const validators = {
     .isIn(['producteur', 'conseiller', 'admin', 'partenaire'])
     .withMessage('Rôle invalide'),
   
-  // Type de capteur
+  // Type de capteur (conforme au schéma PostgreSQL)
   typeCapteur: () => body('type')
-    .isIn(['temperature', 'humidite_sol', 'humidite_air', 'luminosite', 'pluviometrie', 'ph_sol', 'niveau_eau'])
+    .isIn(['humidite', 'temperature', 'ph', 'npk', 'meteo', 'camera'])
     .withMessage('Type de capteur invalide'),
   
-  // Niveau d'alerte
+  // Niveau d'alerte (conforme au schéma PostgreSQL)
   niveauAlerte: () => body('niveau')
-    .isIn(['info', 'warning', 'critical'])
+    .isIn(['info', 'important', 'critique'])
     .withMessage('Niveau d\'alerte invalide'),
   
   // Texte optionnel
@@ -242,10 +242,10 @@ const schemas = {
     validators.superficie(),
     validators.latitude(),
     validators.longitude(),
-    validators.textOptional('adresse', 255),
+    validators.textOptional('description', 1000),
     body('type_sol')
       .optional()
-      .isIn(['argileux', 'sableux', 'limoneux', 'calcaire', 'humifere'])
+      .isIn(['argileux', 'sablonneux', 'limono_argileux', 'limoneux', 'argilo_sableux'])
       .withMessage('Type de sol invalide'),
     validate
   ],

@@ -1,6 +1,9 @@
 /**
  * Contrôleur des Messages
  * AgriSmart CI - Système Agricole Intelligent
+ * 
+ * Table messages: id, user_id, destinataire_id, cooperative_id, est_public,
+ *                 contenu, type, media_url, parcelle_id, alerte_id, lu, lu_at, created_at
  */
 
 const db = require('../config/database');
@@ -12,21 +15,33 @@ const logger = require('../utils/logger');
 
 exports.getConversations = async (req, res, next) => {
   try {
+    // Récupérer les derniers messages par conversation
     const result = await db.query(`
-      SELECT DISTINCT ON (conversation_id) 
-        m.*,
-        CASE WHEN m.expediteur_id = $1 THEN dest.nom ELSE exp.nom END as contact_nom,
-        CASE WHEN m.expediteur_id = $1 THEN dest.prenom ELSE exp.prenom END as contact_prenom,
-        CASE WHEN m.expediteur_id = $1 THEN m.destinataire_id ELSE m.expediteur_id END as contact_id,
-        (SELECT COUNT(*) FROM messages 
-         WHERE destinataire_id = $1 
-         AND expediteur_id = CASE WHEN m.expediteur_id = $1 THEN m.destinataire_id ELSE m.expediteur_id END
-         AND lu = false) as non_lus
-      FROM messages m
-      JOIN users exp ON m.expediteur_id = exp.id
-      JOIN users dest ON m.destinataire_id = dest.id
-      WHERE m.expediteur_id = $1 OR m.destinataire_id = $1
-      ORDER BY conversation_id, m.created_at DESC
+      WITH conversations AS (
+        SELECT DISTINCT 
+          CASE WHEN user_id < destinataire_id 
+            THEN user_id || '_' || destinataire_id 
+            ELSE destinataire_id || '_' || user_id 
+          END as conversation_id,
+          CASE WHEN user_id = $1 THEN destinataire_id ELSE user_id END as contact_id
+        FROM messages
+        WHERE user_id = $1 OR destinataire_id = $1
+      )
+      SELECT c.conversation_id, c.contact_id,
+             u.nom as contact_nom, u.prenoms as contact_prenom,
+             (SELECT contenu FROM messages 
+              WHERE (user_id = $1 AND destinataire_id = c.contact_id) 
+                 OR (user_id = c.contact_id AND destinataire_id = $1)
+              ORDER BY created_at DESC LIMIT 1) as dernier_message,
+             (SELECT created_at FROM messages 
+              WHERE (user_id = $1 AND destinataire_id = c.contact_id) 
+                 OR (user_id = c.contact_id AND destinataire_id = $1)
+              ORDER BY created_at DESC LIMIT 1) as dernier_message_date,
+             (SELECT COUNT(*) FROM messages 
+              WHERE destinataire_id = $1 AND user_id = c.contact_id AND lu = false) as non_lus
+      FROM conversations c
+      JOIN users u ON c.contact_id = u.id
+      ORDER BY dernier_message_date DESC
     `, [req.user.id]);
 
     res.json({
@@ -45,26 +60,23 @@ exports.getConversation = async (req, res, next) => {
     const limit = parseInt(req.query.limit) || 50;
     const offset = (page - 1) * limit;
 
-    // Générer l'ID de conversation (toujours le même peu importe l'ordre)
-    const ids = [req.user.id, userId].sort();
-    const conversationId = `${ids[0]}_${ids[1]}`;
-
     const result = await db.query(`
       SELECT m.*, 
-             exp.nom as expediteur_nom, exp.prenom as expediteur_prenom,
-             dest.nom as destinataire_nom, dest.prenom as destinataire_prenom
+             exp.nom as expediteur_nom, exp.prenoms as expediteur_prenom,
+             dest.nom as destinataire_nom, dest.prenoms as destinataire_prenom
       FROM messages m
-      JOIN users exp ON m.expediteur_id = exp.id
+      JOIN users exp ON m.user_id = exp.id
       JOIN users dest ON m.destinataire_id = dest.id
-      WHERE m.conversation_id = $1
+      WHERE (m.user_id = $1 AND m.destinataire_id = $2)
+         OR (m.user_id = $2 AND m.destinataire_id = $1)
       ORDER BY m.created_at DESC
-      LIMIT $2 OFFSET $3
-    `, [conversationId, limit, offset]);
+      LIMIT $3 OFFSET $4
+    `, [req.user.id, userId, limit, offset]);
 
     // Marquer les messages comme lus
     await db.query(
-      `UPDATE messages SET lu = true, date_lecture = NOW() 
-       WHERE destinataire_id = $1 AND expediteur_id = $2 AND lu = false`,
+      `UPDATE messages SET lu = true, lu_at = NOW() 
+       WHERE destinataire_id = $1 AND user_id = $2 AND lu = false`,
       [req.user.id, userId]
     );
 
@@ -79,10 +91,11 @@ exports.getConversation = async (req, res, next) => {
 
 exports.sendMessage = async (req, res, next) => {
   try {
-    const { destinataire_id, contenu, type = 'texte', fichier_url } = req.body;
+    const { destinataire_id, contenu, type = 'texte' } = req.body;
+    const media_url = req.body.media_url || null;
 
     // Vérifier que le destinataire existe
-    const dest = await db.query(`SELECT id, nom FROM users WHERE id = $1`, [destinataire_id]);
+    const dest = await db.query('SELECT id, nom FROM users WHERE id = $1', [destinataire_id]);
     if (dest.rows.length === 0) {
       throw errors.notFound('Destinataire non trouvé');
     }
@@ -92,15 +105,9 @@ exports.sendMessage = async (req, res, next) => {
       throw errors.badRequest('Vous ne pouvez pas vous envoyer un message');
     }
 
-    // Générer l'ID de conversation
-    const ids = [req.user.id, destinataire_id].sort();
-    const conversationId = `${ids[0]}_${ids[1]}`;
-
     const result = await db.query(
-      `INSERT INTO messages (conversation_id, expediteur_id, destinataire_id, contenu, type, fichier_url)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [conversationId, req.user.id, destinataire_id, contenu, type, fichier_url]
+      'INSERT INTO messages (user_id, destinataire_id, contenu, type, media_url) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [req.user.id, destinataire_id, contenu, type, media_url]
     );
 
     const message = result.rows[0];
@@ -108,7 +115,7 @@ exports.sendMessage = async (req, res, next) => {
     // Émettre via Socket.IO si disponible
     const io = req.app.get('io');
     if (io) {
-      io.to(`user_${destinataire_id}`).emit('nouveau_message', {
+      io.to('user:' + destinataire_id).emit('nouveau_message', {
         ...message,
         expediteur_nom: req.user.nom
       });
@@ -130,7 +137,7 @@ exports.deleteMessage = async (req, res, next) => {
 
     // Vérifier que c'est l'expéditeur
     const message = await db.query(
-      `SELECT expediteur_id FROM messages WHERE id = $1`,
+      'SELECT user_id FROM messages WHERE id = $1',
       [id]
     );
 
@@ -138,14 +145,12 @@ exports.deleteMessage = async (req, res, next) => {
       throw errors.notFound('Message non trouvé');
     }
 
-    if (message.rows[0].expediteur_id !== req.user.id && req.user.role !== ROLES.ADMIN) {
+    if (message.rows[0].user_id !== req.user.id && req.user.role !== ROLES.ADMIN) {
       throw errors.forbidden('Vous ne pouvez supprimer que vos propres messages');
     }
 
-    await db.query(
-      `UPDATE messages SET supprime = true WHERE id = $1`,
-      [id]
-    );
+    // Supprimer le message (vraie suppression)
+    await db.query('DELETE FROM messages WHERE id = $1', [id]);
 
     res.json({
       success: true,
@@ -161,8 +166,7 @@ exports.markAsRead = async (req, res, next) => {
     const { id } = req.params;
 
     await db.query(
-      `UPDATE messages SET lu = true, date_lecture = NOW() 
-       WHERE id = $1 AND destinataire_id = $2`,
+      'UPDATE messages SET lu = true, lu_at = NOW() WHERE id = $1 AND destinataire_id = $2',
       [id, req.user.id]
     );
 
@@ -180,8 +184,7 @@ exports.markAllAsRead = async (req, res, next) => {
     const { userId } = req.params;
 
     await db.query(
-      `UPDATE messages SET lu = true, date_lecture = NOW() 
-       WHERE destinataire_id = $1 AND expediteur_id = $2 AND lu = false`,
+      'UPDATE messages SET lu = true, lu_at = NOW() WHERE destinataire_id = $1 AND user_id = $2 AND lu = false',
       [req.user.id, userId]
     );
 
@@ -194,14 +197,18 @@ exports.markAllAsRead = async (req, res, next) => {
   }
 };
 
-/* ========== NOTIFICATIONS ========== */
+/* ========== NOTIFICATIONS (basées sur les alertes) ========== */
 
+// Les notifications utilisent la table alertes
 exports.getNotifications = async (req, res, next) => {
   try {
     const result = await db.query(`
-      SELECT * FROM notifications 
-      WHERE user_id = $1 
-      ORDER BY created_at DESC 
+      SELECT a.id, a.niveau, a.titre, a.message, a.categorie, a.status,
+             CASE WHEN a.lu_at IS NOT NULL THEN true ELSE false END as lue,
+             a.lu_at, a.created_at
+      FROM alertes a
+      WHERE a.user_id = $1 
+      ORDER BY a.created_at DESC 
       LIMIT 50
     `, [req.user.id]);
 
@@ -217,12 +224,13 @@ exports.getNotifications = async (req, res, next) => {
 exports.getUnreadCount = async (req, res, next) => {
   try {
     const messages = await db.query(
-      `SELECT COUNT(*) as count FROM messages WHERE destinataire_id = $1 AND lu = false`,
+      'SELECT COUNT(*) as count FROM messages WHERE destinataire_id = $1 AND lu = false',
       [req.user.id]
     );
 
+    // Utiliser alertes comme notifications (lu_at IS NULL = non lu)
     const notifications = await db.query(
-      `SELECT COUNT(*) as count FROM notifications WHERE user_id = $1 AND lue = false`,
+      'SELECT COUNT(*) as count FROM alertes WHERE user_id = $1 AND lu_at IS NULL',
       [req.user.id]
     );
 
@@ -243,7 +251,7 @@ exports.markNotificationRead = async (req, res, next) => {
     const { id } = req.params;
 
     await db.query(
-      `UPDATE notifications SET lue = true WHERE id = $1 AND user_id = $2`,
+      'UPDATE alertes SET lu_at = NOW() WHERE id = $1 AND user_id = $2 AND lu_at IS NULL',
       [id, req.user.id]
     );
 
@@ -259,7 +267,7 @@ exports.markNotificationRead = async (req, res, next) => {
 exports.markAllNotificationsRead = async (req, res, next) => {
   try {
     await db.query(
-      `UPDATE notifications SET lue = true WHERE user_id = $1 AND lue = false`,
+      'UPDATE alertes SET lu_at = NOW() WHERE user_id = $1 AND lu_at IS NULL',
       [req.user.id]
     );
 
@@ -281,31 +289,28 @@ exports.broadcastMessage = async (req, res, next) => {
     let userIds = [];
 
     if (destinataires === 'all') {
-      const users = await db.query(`SELECT id FROM users WHERE actif = true`);
+      const users = await db.query("SELECT id FROM users WHERE status = 'actif'");
       userIds = users.rows.map(u => u.id);
     } else if (destinataires === 'producteurs') {
-      const users = await db.query(`SELECT id FROM users WHERE role = 'producteur' AND actif = true`);
+      const users = await db.query("SELECT id FROM users WHERE role = 'producteur' AND status = 'actif'");
       userIds = users.rows.map(u => u.id);
     } else if (Array.isArray(destinataires)) {
       userIds = destinataires;
     }
 
-    // Créer les notifications
-    const values = userIds.map(userId => 
-      `('${userId}', '${type}', '${titre}', '${contenu}')`
-    ).join(',');
-
-    if (values) {
-      await db.query(`
-        INSERT INTO notifications (user_id, type, titre, message) VALUES ${values}
-      `);
+    // Créer les alertes comme notifications (utiliser les colonnes correctes)
+    for (const userId of userIds) {
+      await db.query(
+        "INSERT INTO alertes (user_id, niveau, titre, message, categorie) VALUES ($1, 'info', $2, $3, $4)",
+        [userId, titre, contenu, type]
+      );
     }
 
     // Émettre via Socket.IO
     const io = req.app.get('io');
     if (io) {
       for (const userId of userIds) {
-        io.to(`user_${userId}`).emit('notification', {
+        io.to('user:' + userId).emit('notification', {
           type,
           titre,
           message: contenu
@@ -317,7 +322,7 @@ exports.broadcastMessage = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: `Message envoyé à ${userIds.length} utilisateurs`
+      message: 'Message envoyé à ' + userIds.length + ' utilisateurs'
     });
   } catch (error) {
     next(error);
@@ -330,15 +335,15 @@ exports.getContacts = async (req, res, next) => {
   try {
     // Récupérer les utilisateurs avec qui on a déjà échangé + les conseillers
     const result = await db.query(`
-      SELECT DISTINCT u.id, u.nom, u.prenom, u.role, u.localisation
+      SELECT DISTINCT u.id, u.nom, u.prenoms, u.role, u.region_id
       FROM users u
-      WHERE u.id != $1 AND u.actif = true
+      WHERE u.id != $1 AND u.status = 'actif'
       AND (
         u.role IN ('conseiller', 'admin')
         OR u.id IN (
-          SELECT DISTINCT expediteur_id FROM messages WHERE destinataire_id = $1
+          SELECT DISTINCT user_id FROM messages WHERE destinataire_id = $1
           UNION
-          SELECT DISTINCT destinataire_id FROM messages WHERE expediteur_id = $1
+          SELECT DISTINCT destinataire_id FROM messages WHERE user_id = $1
         )
       )
       ORDER BY u.nom
@@ -362,14 +367,14 @@ exports.searchUsers = async (req, res, next) => {
     }
 
     const result = await db.query(`
-      SELECT id, nom, prenom, role, localisation
+      SELECT id, nom, prenoms, role, region_id
       FROM users 
-      WHERE actif = true 
+      WHERE status = 'actif' 
       AND id != $1
-      AND (nom ILIKE $2 OR prenom ILIKE $2 OR telephone ILIKE $2)
+      AND (nom ILIKE $2 OR prenoms ILIKE $2 OR telephone ILIKE $2)
       ORDER BY nom
       LIMIT 20
-    `, [req.user.id, `%${q}%`]);
+    `, [req.user.id, '%' + q + '%']);
 
     res.json({
       success: true,

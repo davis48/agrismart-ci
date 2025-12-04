@@ -65,16 +65,16 @@ exports.search = async (req, res, next) => {
 
 exports.create = async (req, res, next) => {
   try {
-    const { nom, nom_scientifique, categorie, cycle_jours, description,
-            temp_min, temp_max, humidite_min, humidite_max, ph_min, ph_max } = req.body;
+    const { nom, nom_scientifique, categorie, duree_cycle_jours, description,
+            temperature_min, temperature_max, humidite_sol_min, humidite_sol_max, ph_min, ph_max } = req.body;
 
     const result = await db.query(
-      `INSERT INTO cultures (nom, nom_scientifique, categorie, cycle_jours, description,
-                             temp_min, temp_max, humidite_min, humidite_max, ph_min, ph_max)
+      `INSERT INTO cultures (nom, nom_scientifique, categorie, duree_cycle_jours, description,
+                             temperature_min, temperature_max, humidite_sol_min, humidite_sol_max, ph_min, ph_max)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
-      [nom, nom_scientifique, categorie, cycle_jours, description,
-       temp_min, temp_max, humidite_min, humidite_max, ph_min, ph_max]
+      [nom, nom_scientifique, categorie, duree_cycle_jours, description,
+       temperature_min, temperature_max, humidite_sol_min, humidite_sol_max, ph_min, ph_max]
     );
 
     logger.audit('Création culture', { userId: req.user.id, cultureId: result.rows[0].id });
@@ -110,8 +110,8 @@ exports.getById = async (req, res, next) => {
 exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const fields = ['nom', 'nom_scientifique', 'categorie', 'cycle_jours', 'description',
-                   'temp_min', 'temp_max', 'humidite_min', 'humidite_max', 'ph_min', 'ph_max'];
+    const fields = ['nom', 'nom_scientifique', 'categorie', 'duree_cycle_jours', 'description',
+                   'temperature_min', 'temperature_max', 'humidite_sol_min', 'humidite_sol_max', 'ph_min', 'ph_max'];
     
     const updates = [];
     const params = [];
@@ -177,7 +177,7 @@ exports.getAllPlantations = async (req, res, next) => {
     const offset = (page - 1) * limit;
 
     let query = `
-      SELECT pl.*, c.nom as culture_nom, c.cycle_jours, p.nom as parcelle_nom, p.proprietaire_id
+      SELECT pl.*, c.nom as culture_nom, c.duree_cycle_jours, p.nom as parcelle_nom, p.user_id
       FROM plantations pl
       JOIN cultures c ON pl.culture_id = c.id
       JOIN parcelles p ON pl.parcelle_id = p.id
@@ -187,11 +187,11 @@ exports.getAllPlantations = async (req, res, next) => {
     let paramIndex = 1;
 
     if (req.user.role === ROLES.PRODUCTEUR) {
-      query += ` AND p.proprietaire_id = $${paramIndex++}`;
+      query += ` AND p.user_id = $${paramIndex++}`;
       params.push(req.user.id);
     }
 
-    query += ` ORDER BY pl.date_plantation DESC LIMIT $${paramIndex++} OFFSET $${paramIndex}`;
+    query += ` ORDER BY pl.date_semis DESC LIMIT $${paramIndex++} OFFSET $${paramIndex}`;
     params.push(limit, offset);
 
     const result = await db.query(query, params);
@@ -207,13 +207,13 @@ exports.getAllPlantations = async (req, res, next) => {
 
 exports.createPlantation = async (req, res, next) => {
   try {
-    const { parcelle_id, culture_id, date_plantation, superficie, 
-            date_recolte_prevue, quantite_semence, notes } = req.body;
+    const { parcelle_id, culture_id, date_semis, superficie_plantee, 
+            date_recolte_prevue, observations } = req.body;
 
     // Vérifier l'accès à la parcelle
     if (req.user.role === ROLES.PRODUCTEUR) {
       const parcelle = await db.query(
-        `SELECT id FROM parcelles WHERE id = $1 AND proprietaire_id = $2`,
+        `SELECT id FROM parcelles WHERE id = $1 AND user_id = $2`,
         [parcelle_id, req.user.id]
       );
       if (parcelle.rows.length === 0) {
@@ -222,11 +222,11 @@ exports.createPlantation = async (req, res, next) => {
     }
 
     const result = await db.query(
-      `INSERT INTO plantations (parcelle_id, culture_id, date_plantation, superficie,
-                                date_recolte_prevue, quantite_semence, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO plantations (parcelle_id, culture_id, date_semis, superficie_plantee,
+                                date_recolte_prevue, observations)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [parcelle_id, culture_id, date_plantation, superficie, date_recolte_prevue, quantite_semence, notes]
+      [parcelle_id, culture_id, date_semis, superficie_plantee, date_recolte_prevue, observations]
     );
 
     logger.audit('Création plantation', { userId: req.user.id, plantationId: result.rows[0].id });
@@ -246,8 +246,8 @@ exports.getPlantationById = async (req, res, next) => {
     const { id } = req.params;
 
     const result = await db.query(
-      `SELECT pl.*, c.nom as culture_nom, c.cycle_jours, c.description as culture_description,
-              p.nom as parcelle_nom, p.superficie as parcelle_superficie
+      `SELECT pl.*, c.nom as culture_nom, c.duree_cycle_jours, c.description as culture_description,
+              p.nom as parcelle_nom, p.superficie_hectares as parcelle_superficie
        FROM plantations pl
        JOIN cultures c ON pl.culture_id = c.id
        JOIN parcelles p ON pl.parcelle_id = p.id
@@ -271,17 +271,17 @@ exports.getPlantationById = async (req, res, next) => {
 exports.updatePlantation = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { date_recolte_prevue, notes, statut } = req.body;
+    const { date_recolte_prevue, observations, est_active } = req.body;
 
     const result = await db.query(
       `UPDATE plantations 
        SET date_recolte_prevue = COALESCE($1, date_recolte_prevue),
-           notes = COALESCE($2, notes),
-           statut = COALESCE($3, statut),
+           observations = COALESCE($2, observations),
+           est_active = COALESCE($3, est_active),
            updated_at = NOW()
        WHERE id = $4
        RETURNING *`,
-      [date_recolte_prevue, notes, statut, id]
+      [date_recolte_prevue, observations, est_active, id]
     );
 
     if (result.rows.length === 0) {
@@ -301,19 +301,18 @@ exports.updatePlantation = async (req, res, next) => {
 exports.recordRecolte = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { date_recolte, quantite_recoltee, qualite, notes } = req.body;
+    const { date_recolte_effective, rendement_obtenu, observations } = req.body;
 
     const result = await db.query(
       `UPDATE plantations 
-       SET date_recolte = $1,
-           quantite_recoltee = $2,
-           qualite_recolte = $3,
-           notes = COALESCE($4, notes),
-           statut = 'recoltee',
+       SET date_recolte_effective = $1,
+           rendement_obtenu = $2,
+           observations = COALESCE($3, observations),
+           est_active = false,
            updated_at = NOW()
-       WHERE id = $5
+       WHERE id = $4
        RETURNING *`,
-      [date_recolte, quantite_recoltee, qualite, notes, id]
+      [date_recolte_effective, rendement_obtenu, observations, id]
     );
 
     if (result.rows.length === 0) {
@@ -337,7 +336,7 @@ exports.deletePlantation = async (req, res, next) => {
     const { id } = req.params;
 
     const result = await db.query(
-      `UPDATE plantations SET statut = 'annulee', updated_at = NOW() WHERE id = $1 RETURNING id`,
+      `UPDATE plantations SET est_active = false, updated_at = NOW() WHERE id = $1 RETURNING id`,
       [id]
     );
 
